@@ -132,6 +132,58 @@ canceled starts and failed setup. The operator Node is reused across reconnects
 and remains alive for pending RPC cleanup.
 
 The source-only [lifetime tests](tests/README.md) exercise these boundaries with
-synthetic transports. Physical operator-control-loss reproduction and acoustic
-teardown proof remain outstanding; host results do not establish audible
-continuation or hardware behavior.
+synthetic transports. Verify operator control loss and acoustic teardown on the
+target board as well; host results do not establish audible continuation or
+hardware behavior.
+
+## Voice agent actions
+
+Default firmware requests `operator.read` and `operator.talk`. Conversation and
+the Gateway's read-only voice tools are available; spoken requests cannot run
+mutating agent tools. Receiving authorized node commands, such as Canvas or
+`talk.start`, is a separate capability.
+
+To allow voice actions, prepare the credential **before** enabling the build
+setting. Use a Gateway that supports `device.scopes.requestUpgrade` and
+`device.scopes.waitUpgrade`:
+
+1. Flash the default firmware and pair with a voice-node setup code. Wait for
+   `operator Talk session ready` and stop any active call.
+2. Run `voice-actions request` in the USB console. On the Gateway, run
+   `openclaw devices list`, verify the exact request ID and device identity,
+   and approve its `operator.read`, `operator.talk`, `operator.write`, and
+   `operator.admin` scopes with `openclaw devices approve <requestId>`.
+3. Run `voice-actions complete <requestId>` in the USB console. Wait for the
+   new `operator Talk session ready` message: queued completion alone does
+   not mean the replacement token has been saved.
+4. Enable **OpenClaw room node → Request owner access for voice agent actions**
+   (`CONFIG_OPENCLAW_ROOM_VOICE_ACTIONS=y`) in `idf.py menuconfig`, rebuild,
+   and flash. Verify a real spoken action with an enabled agent tool. When the
+   Gateway asks for confirmation of a high-impact action, answer aloud; owner
+   access does not bypass that confirmation.
+
+**This grants owner access**, including the configured agent's `nodes` tool
+for spoken control of other devices and Gateway administration tools. It is
+not limited to the paired watch or a single Dial. Enable it only for a trusted
+voice device in a trusted environment; agent tool policy still applies.
+The build option defaults to off and never approves its own request. Approval
+rotates the old token, so keep power and connectivity until step 3 completes.
+Interrupted preparation may require re-pairing with default firmware. Flashing
+the enabled build before preparation fails authentication instead of creating
+a pending approval. To return to read-only voice access, flash a build with
+the setting disabled; the declared connection scopes then omit write and admin access.
+
+An operator token that was explicitly narrowed after a previous owner approval
+stays narrowed when the same scopes are approved again. If completion reports
+insufficient access, a Gateway administrator must restore this device's token
+scopes before re-pairing with a fresh voice-node setup code on default firmware:
+
+```sh
+openclaw devices rotate --device <device-id> --role operator \
+  --scope operator.read --scope operator.talk --scope operator.write \
+  --scope operator.admin
+```
+
+Keep the returned credential private. Use the voice-node setup code for USB
+provisioning; do not paste the raw token into the console. Wait for operator
+readiness before flashing the enabled build.
