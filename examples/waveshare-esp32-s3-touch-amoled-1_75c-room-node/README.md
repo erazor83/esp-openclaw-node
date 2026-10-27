@@ -13,6 +13,7 @@ Current measured behaviour (face off, `WAVESHARE_DRAW_ROWS=8`, audio stubbed):
   **not** fit in the remaining contiguous internal RAM.
 - Animated face (`animation_frame_ms = 16`) monopolizes CPU 0 and trips the
   task watchdog.
+- **Talk / WakeNet are not demonstrated.**
 
 See [FINDINGS.md](FINDINGS.md) for the staged heap tables, the face on/off
 matrix, and the audio-stub A/B results.
@@ -56,12 +57,15 @@ dimensions.
   `bsp_display_lock()` returns `esp_err_t` (not `bool`). Two partial DMA
   draw buffers of `WAVESHARE_DRAW_ROWS` (default 8) rows are allocated in
   internal DMA-capable memory because the panel cannot DMA from PSRAM.
+  (`CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT` is the BSP's own LVGL buffer height
+  and is independent of `WAVESHARE_DRAW_ROWS`.)
 - Face: disabled by default. Enabling it at 16 ms starves `IDLE0`.
-- Audio: the real `waveshare_audio_open` (ES8311 playback + ES7210 capture)
-  is present but not used by default. The stub satisfies the room-node
-  contract without consuming the internal RAM needed by the second
-  WebSocket client. Input-gain configuration therefore fails and the
-  component falls back to canvas-only mode — expected for this profile.
+- Audio: gated by `WAVESHARE_AUDIO_STUB` (default 1). The stub leaves the
+  codec handles NULL and returns an error so the room node takes the safe
+  canvas-only fallback. The real `waveshare_audio_open` (ES8311 playback +
+  ES7210 capture) is present but not used by default. Real audio + dual
+  clients does not fit the internal RAM budget. Talk / WakeNet are not
+  demonstrated.
 - Touch and BOOT button use the shared room-node input path.
 
 The [shared room component](../../components/esp-openclaw-room-node/README.md)
@@ -83,3 +87,6 @@ remain under qualification.
 A first upstream slice can reasonably be: 1.75C adapter + face off +
 `DRAW_ROWS=8` + documented heap ceiling. Full dual-session audio remains
 out of scope until the internal-RAM budget improves.
+
+The audio stub is intentionally the default for this WIP. A future Kconfig
+(`CONFIG_WAVESHARE_1_75C_AUDIO_STUB`) would make the opt-in even clearer.

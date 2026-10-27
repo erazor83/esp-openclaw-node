@@ -14,8 +14,12 @@
  * Current upstream-friendly profile (see FINDINGS.md):
  *   - animated_face = false (face-on starves IDLE0 and trips the WDT)
  *   - WAVESHARE_DRAW_ROWS = 8
- *   - audio.open points at the stub (real audio + dual clients does
+ *   - audio path is stubbed by default (real audio + dual clients does
  *     not fit the internal budget yet)
+ *
+ * The stub is gated by WAVESHARE_AUDIO_STUB. Prefer a Kconfig
+ * (CONFIG_WAVESHARE_1_75C_AUDIO_STUB) long-term so the WIP default
+ * cannot be mistaken for a ready audio path.
  */
 
 #include "esp_openclaw_room_node.h"
@@ -32,6 +36,12 @@
 
 #define TAG "waveshare_room"
 
+/* 1 = use the heap-only stub (current WIP default).
+ * 0 = use the real ES8311/ES7210 path (does not fit dual clients yet). */
+#ifndef WAVESHARE_AUDIO_STUB
+#define WAVESHARE_AUDIO_STUB 1
+#endif
+
 /* 8 rows is the practical middle ground on the 1.75C once audio is
  * stubbed:
  * - 4 rows leaves a few KB more internal RAM but increases partial
@@ -39,7 +49,11 @@
  * - 16 rows improves refresh but leaves too little internal RAM for
  *   the operator WebSocket task even without audio.
  * With the real audio path the operator client fails at every tested
- * row count. */
+ * row count.
+ *
+ * Note: WAVESHARE_DRAW_ROWS sizes the two internal DMA partial buffers
+ * allocated below. CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT in sdkconfig
+ * is the BSP's own LVGL buffer height and is independent. */
 #define WAVESHARE_DRAW_ROWS 8
 
 static void (*toggle_room_view)(void);
@@ -161,20 +175,21 @@ static esp_err_t waveshare_set_brightness(void *ctx, int percent)
     return bsp_display_brightness_set(percent);
 }
 
-/* Heap-only stub for the A/B and the current WIP profile.
- * Satisfies the room-node contract (non-NULL handles) without
- * bringing up I2S, codecs, or the AFE. With the real audio path
- * the operator client fails with ESP_ERR_NO_MEM (see FINDINGS.md). */
+/* Safe heap-only stub.
+ * Leaves handles NULL and returns an error so room_media_init takes the
+ * canvas-only fallback path. Returning dummy non-NULL handles caused
+ * undefined behaviour when the room node later called
+ * esp_codec_dev_set_in_gain on them. */
 static esp_err_t waveshare_audio_open_stub(void *ctx,
                                            esp_openclaw_room_audio_handles_t *handles)
 {
     (void)ctx;
-    static int dummy_record;
-    static int dummy_playback;
-    handles->record   = (esp_codec_dev_handle_t)&dummy_record;
-    handles->playback = (esp_codec_dev_handle_t)&dummy_playback;
-    log_heap("audio stub (no I2S/codec)");
-    return ESP_OK;
+    if (handles != NULL) {
+        handles->record = NULL;
+        handles->playback = NULL;
+    }
+    log_heap("audio stub (no I2S/codec, canvas-only fallback)");
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 static esp_err_t waveshare_audio_open(
@@ -312,11 +327,14 @@ void app_main(void)
             .animation_frame_ms = 16,
         },
         .audio = {
-            /* Stub is the current WIP default. Swap to waveshare_audio_open
-             * only after the internal-RAM budget for dual clients + AFE
-             * has been improved. */
+#if WAVESHARE_AUDIO_STUB
+            /* Stub is the current WIP default. It returns an error and
+             * leaves handles NULL so the room node falls back to
+             * canvas-only without touching dummy codec devices. */
             .open = waveshare_audio_open_stub,
-            //.open = waveshare_audio_open,
+#else
+            .open = waveshare_audio_open,
+#endif
             .afe_layout = "MR",
             .record_channels = 2,
             .channel_mask = 0x3,

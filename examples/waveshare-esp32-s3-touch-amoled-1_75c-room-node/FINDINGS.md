@@ -11,7 +11,9 @@ and subsequent runtime testing.
   `bsp_display_lock()` returns `esp_err_t` (via `esp_lv_adapter_lock`),
   not `bool`. The original boolean test caused the `ESP_ERR_TIMEOUT`
   abort inside `room_canvas_init()`.
-- Added `CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=16` in `sdkconfig.defaults`.
+- Set `CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=8` in `sdkconfig.defaults`
+  (BSP LVGL buffer height). The DMA partial buffers used by this adapter
+  are sized independently by `WAVESHARE_DRAW_ROWS` (see below).
 - Switched to a custom certificate bundle
   (`DEFAULT_NONE` + `CUSTOM_CERTIFICATE_BUNDLE_PATH` pointing at
   `certificates/public-roots.pem`).
@@ -31,6 +33,13 @@ and subsequent runtime testing.
   The CO5300 QSPI panel cannot DMA from PSRAM, so these must stay
   internal.
 
+**Buffer sizing note:** the numbers in the tables below were measured
+with `WAVESHARE_DRAW_ROWS` set to 4 / 8 / 16. That macro is what sizes
+the two internal DMA buffers allocated in `waveshare_display_start()`.
+`CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT` (currently 8 in
+`sdkconfig.defaults`) is the BSP's own LVGL buffer height and is
+independent of the adapter's DMA buffers.
+
 ## Animated face = true
 
 With the face enabled (`animation_frame_ms = 16`), the LVGL worker
@@ -42,7 +51,8 @@ Disabling the face removes the watchdog.
 
 ## Heap stages vs. DRAW_ROWS (real audio path, face off)
 
-Numbers are approximate from successive runs.
+Numbers are approximate from successive runs. DMA buffers sized by
+`WAVESHARE_DRAW_ROWS`.
 
 | Stage                   | DRAW_ROWS=4           | DRAW_ROWS=8              | DRAW_ROWS=16      |
 |-------------------------|-----------------------|--------------------------|-------------------|
@@ -85,41 +95,34 @@ W (...) esp_openclaw_node: connect_diag stage=failed role=operator reason=0 loca
 ## Audio stub A/B (DRAW_ROWS 8 vs 4)
 
 To isolate the audio path’s internal-RAM cost the real
-`waveshare_audio_open` was replaced with a minimal stub that satisfies
-the room-node contract (non-NULL handles) without bringing up I2S,
-codecs, or the AFE.
+`waveshare_audio_open` was replaced with a minimal stub. The stub used
+for these measurements returned `ESP_OK` with dummy handles; the current
+code returns `ESP_ERR_NOT_SUPPORTED` and leaves the handles NULL so the
+room node takes a safe canvas-only fallback (no undefined behaviour on
+`esp_codec_dev_set_in_gain`).
 
-### Stub
+### Stub (current safe version)
 
 ```c
-/* Heap-only stub for the A/B. Satisfies the contract (non-NULL handles)
- * without bringing up I2S, codecs, or the AFE pipeline. */
 static esp_err_t waveshare_audio_open_stub(void *ctx,
                                            esp_openclaw_room_audio_handles_t *handles)
 {
     (void)ctx;
-    static int dummy_record;
-    static int dummy_playback;
-    handles->record   = (esp_codec_dev_handle_t)&dummy_record;
-    handles->playback = (esp_codec_dev_handle_t)&dummy_playback;
-    log_heap("audio stub (no I2S/codec)");
-    return ESP_OK;
+    if (handles != NULL) {
+        handles->record = NULL;
+        handles->playback = NULL;
+    }
+    log_heap("audio stub (no I2S/codec, canvas-only fallback)");
+    return ESP_ERR_NOT_SUPPORTED;
 }
 ```
 
-In `app_main`:
+The stub is selected by `WAVESHARE_AUDIO_STUB` (default 1). A Kconfig
+option would be preferable long-term so the WIP default is harder to
+miss.
 
-```c
-.audio = {
-    .open = waveshare_audio_open_stub,   // swap with waveshare_audio_open for the real path
-    .afe_layout = "MR",
-    // ... rest unchanged
-},
-```
-
-Face stayed off for both runs. The stub causes the expected
-`input gain set failed: 262` and falls back to “canvas only” — fine
-for the heap measurement.
+Face stayed off for both runs. The stub causes the expected canvas-only
+fallback — fine for the heap measurement.
 
 ### Results (stub, face off)
 
@@ -148,6 +151,7 @@ more lock contention while the two clients are coming up).
   draw-buffer size.
 - Face-on is a separate scheduling problem (CPU 0 monopolization), not
   the operator `NO_MEM`.
+- Talk / WakeNet have not been demonstrated on this board.
 
 For a first upstream slice, **1.75C adapter + face off + DRAW_ROWS=8 +
 documented heap ceiling** looks reasonable. Dual node+operator+audio
